@@ -12,12 +12,87 @@ namespace ExtractGPSFromAVISubtitle
         const string subtitlePattern = @"(\w\S+):(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}).+G\s+([-\d\.]+)\s([NS])\s+([-\d\.]+)\s([EW])\s+(\d+)km";
         static void Main(string[] args)
         {
+            string[] inputFileList = null;
+            string outputFile = "";
             var dataArrayList = new Dictionary<long, List<string>>();
-            Match m = null;
-            for (int i = 0; i < args.Length; i++)
+            Match m;
+            if (args.Length == 0)
             {
-                string inputFile = args[i];
+                Console.Error.WriteLine("Error: AVI file does not exist.");
+                Environment.Exit(1);
+            }
+            else
+            {
+                int numOfValidFiles = 0;
+                int outputArgIdx = int.MinValue;
+                // AVIファイルのリストをListではなく配列に格納したかったので、まずAVIファイルの総数を確認する
+                for (int i = 0; i < args.Length; i++)
+                {
+                    if (i == outputArgIdx + 1)
+                    {
+                        if (!Path.IsPathRooted(args[i]))
+                        {
+                            // -o 相対パス の場合はカレントディレクトリの文字列をつなげる
+                            outputFile = Directory.GetCurrentDirectory() + "\\" + args[i];
+                        }
+                        else
+                        {
+                            // -o 絶対パス の場合はそのまま
+                            outputFile = args[i];
+                        }
+                        continue;
+                    }
+                    if (args[i].Equals("-o"))
+                    {
+                        outputArgIdx = i;
+                        continue;
+                    }
+                    if (File.Exists(args[i]))
+                    {
+                        m = Regex.Match(args[i], @".+\.AVI$");
+                        if (m.Success)
+                        {
+                            // 指定されたファイルの内、実在する拡張子がAVIのファイルをカウントする
+                            numOfValidFiles++;
+                        }
+                    }
+                    if (Directory.Exists(args[i]))
+                    {
+                        // 指定された実在するディレクトリ直下に存在するファイルの内、拡張子がAVIのファイルをカウントする
+                        numOfValidFiles += (Directory.GetFiles(args[i], "*.AVI", SearchOption.TopDirectoryOnly).Length);
+                    }
+                }
+                if (numOfValidFiles == 0)
+                {
+                    Console.Error.WriteLine("Error: AVI file does not exist.");
+                    Environment.Exit(1);
+                }
+                inputFileList = new string[numOfValidFiles];
+                int idx = 0;
+                for (int i = 0; i < args.Length; i++)
+                {
+                    if (File.Exists(args[i]))
+                    {
+                        m = Regex.Match(args[i], @".+\.AVI$");
+                        if (m.Success)
+                        {
+                            inputFileList[idx] = args[i];
+                            idx++;
+                        }
+                    }
+                    if (Directory.Exists(args[i]))
+                    {
+                        string[] names = Directory.GetFiles(args[i], "*.AVI", SearchOption.TopDirectoryOnly);
+                        Array.Copy(names, 0, inputFileList, idx, names.Length);
+                        idx += names.Length;
+                    }
+                }
+            }
+            for (int i=0; i< inputFileList.Length; i++)
+            {
+                string inputFile = inputFileList[i];
                 List<string> subtitleList = null;
+                Console.Out.WriteLine(i+1 + "/" + inputFileList.Length + " files");
 
                 // バイナリモードでファイルを読み込む
                 try
@@ -135,17 +210,19 @@ namespace ExtractGPSFromAVISubtitle
             keys.Sort();
 
             // タイムスタンプが最も小さいAVIファイルを元に、出力するGPXファイル名を作成する
-            string outputFile = "";
-            string firstInputFile = (dataArrayList[keys[0]])[0];
-            m = Regex.Match(firstInputFile, @"(.+)\.[^\.]+$");
-            if (m.Success)
+            if (outputFile.Equals(""))
             {
-                outputFile = m.Groups[1].Value + ".gpx";
-            }
-            else
-            {
-                Console.Error.WriteLine("Error: File name extension does not exist.");
-                Environment.Exit(1);
+                string firstInputFile = (dataArrayList[keys[0]])[0];
+                m = Regex.Match(firstInputFile, @"(.+)\.[^\.]+$");
+                if (m.Success)
+                {
+                    outputFile = m.Groups[1].Value + ".gpx";
+                }
+                else
+                {
+                    Console.Error.WriteLine("Error: File name extension does not exist.");
+                    Environment.Exit(1);
+                }
             }
 
             // GPXファイルを作成する
