@@ -12,8 +12,12 @@ namespace ExtractGPSFromAVISubtitle
         const string subtitlePattern = @"(\w\S+):(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}).+G\s+([-\d\.]+)\s([NS])\s+([-\d\.]+)\s([EW])\s+(\d+)km";
         static void Main(string[] args)
         {
+            long gap = 60; // デフォルトで1時間空いていたら別ファイルに出力する
             string[] inputFileList = null;
+            string specifiedOutput = "";
             string outputFile = "";
+            int outputArgIdx = int.MinValue;
+            int gapArgIdx = int.MinValue;
             var dataArrayList = new Dictionary<long, List<string>>();
             Match m;
             if (args.Length == 0)
@@ -24,27 +28,60 @@ namespace ExtractGPSFromAVISubtitle
             else
             {
                 int numOfValidFiles = 0;
-                int outputArgIdx = int.MinValue;
+                outputArgIdx = int.MinValue;
                 // AVIファイルのリストをListではなく配列に格納したかったので、まずAVIファイルの総数を確認する
                 for (int i = 0; i < args.Length; i++)
                 {
                     if (i == outputArgIdx + 1)
                     {
-                        if (!Path.IsPathRooted(args[i]))
+                        m = Regex.Match(args[i], @".+\.gpx$");
+                        if (m.Success)
                         {
-                            // -o 相対パス の場合はカレントディレクトリの文字列をつなげる
-                            outputFile = Directory.GetCurrentDirectory() + "\\" + args[i];
+                            if (!Path.IsPathRooted(args[i]))
+                            {
+                                // -o 相対パス の場合はカレントディレクトリの文字列をつなげる
+                                specifiedOutput = args[i];
+                                outputFile = Directory.GetCurrentDirectory() + "\\" + specifiedOutput;
+                            }
+                            else
+                            {
+                                // -o 絶対パス の場合はそのまま
+                                specifiedOutput = args[i];
+                                outputFile = specifiedOutput;
+                            }
+                            continue;
+                        }
+                        else if (Directory.Exists(args[i]))
+                        {
+                            // -o フォルダへのパス の場合はそのまま
+                            specifiedOutput = args[i];
+                            outputFile = specifiedOutput;
                         }
                         else
                         {
-                            // -o 絶対パス の場合はそのまま
-                            outputFile = args[i];
+                            outputArgIdx = int.MinValue;
                         }
-                        continue;
                     }
                     if (args[i].Equals("-o"))
                     {
                         outputArgIdx = i;
+                        continue;
+                    }
+                    if (i == gapArgIdx + 1)
+                    {
+                        // -g GPS出力データを区切る間隔[分]
+                        if (long.TryParse(args[i], out gap))
+                        {
+                            continue;
+                        }
+                        else
+                        {
+                            gapArgIdx = int.MinValue;
+                        }
+                    }
+                    if (args[i].Equals("-g"))
+                    {
+                        gapArgIdx = i;
                         continue;
                     }
                     if (File.Exists(args[i]))
@@ -205,96 +242,150 @@ namespace ExtractGPSFromAVISubtitle
                 Environment.Exit(1);
             }
 
-            // タイムスタンプ順にAVIファイルをソートする
-            List<long> keys = dataArrayList.Keys.ToList();
-            keys.Sort();
-
-            // タイムスタンプが最も小さいAVIファイルを元に、出力するGPXファイル名を作成する
-            if (outputFile.Equals(""))
+            while (dataArrayList.Count != 0)
             {
-                string firstInputFile = (dataArrayList[keys[0]])[0];
-                m = Regex.Match(firstInputFile, @"(.+)\.[^\.]+$");
-                if (m.Success)
+
+                // タイムスタンプ順にAVIファイルをソートする
+                List<long> keys = dataArrayList.Keys.ToList();
+                keys.Sort();
+
+                // タイムスタンプが最も小さいAVIファイルを元に、出力するGPXファイル名を作成する
+                if (outputArgIdx == int.MinValue)
                 {
-                    outputFile = m.Groups[1].Value + ".gpx";
+                    string firstInputFile = (dataArrayList[keys[0]])[0];
+                    m = Regex.Match(firstInputFile, @"(.+)\.[^\.]+$");
+                    if (m.Success)
+                    {
+                        outputFile = m.Groups[1].Value + ".gpx";
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine("Error: Output file name is invalid.");
+                        Environment.Exit(1);
+                    }
                 }
                 else
                 {
-                    Console.Error.WriteLine("Error: File name extension does not exist.");
-                    Environment.Exit(1);
-                }
-            }
-
-            // GPXファイルを作成する
-            bool firstFlag = true;
-            long lasttick = 0;
-            try
-            {
-                using (var writer = new StreamWriter(outputFile))
-                {
-                    foreach (long key in keys)
+                    if (Directory.Exists(specifiedOutput))
                     {
-                        List<string> subtitles = dataArrayList[key];
-                        foreach (string subtitle in subtitles)
+                        string firstInputFile = (dataArrayList[keys[0]])[0];
+                        m = Regex.Match(firstInputFile, @".+\\([^\\]+)\.[^\.]+$");
+                        if (m.Success)
                         {
-                            m = Regex.Match(subtitle, subtitlePattern);
+                            outputFile = specifiedOutput + "\\" + m.Groups[1].Value + ".gpx";
+                        }
+                        else
+                        {
+                            Console.Error.WriteLine("Error: Output file name is invalid.");
+                            Environment.Exit(1);
+                        }
+                    }
+                    else if (File.Exists(outputFile))
+                    {
+                        m = Regex.Match(outputFile, @"(.+)\((\d+)\)\.gpx$");
+                        if (m.Success)
+                        {
+                            outputFile = m.Groups[1].Value + "(" + (int.Parse(m.Groups[2].Value) + 1).ToString() + ")" + ".gpx";
+                        }
+                        else
+                        {
+                            m = Regex.Match(outputFile, @"(.+)\.gpx$");
                             if (m.Success)
                             {
-                                string product = m.Groups[1].Value;
-                                string year = m.Groups[2].Value;
-                                string month = m.Groups[3].Value;
-                                string day = m.Groups[4].Value;
-                                string hour = m.Groups[5].Value;
-                                string minute = m.Groups[6].Value;
-                                string second = m.Groups[7].Value;
-                                string latitude = m.Groups[8].Value;
-                                if (m.Groups[9].Value.Equals("S")) latitude = "-" + latitude;
-                                string longitude = m.Groups[10].Value;
-                                if (m.Groups[11].Value.Equals("W")) longitude = "-" + longitude;
-                                string velocity = m.Groups[12].Value;
-
-                                if (firstFlag)
-                                {
-                                    writer.WriteLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-                                    writer.WriteLine("<gpx version=\"1.1\" xmlns=\"http://www.topografix.com/GPX/1/1\" creator=\"ExtractGPSFromAVISubtitle\">");
-                                    writer.WriteLine("<trk>");
-                                    writer.Write("<name>" + product);
-                                    writer.Write(String.Format("_{0}-{1:00}-{2:00}_{3:00}:{4:00}:{5:00}", year, month, day, hour, minute, second));
-                                    writer.WriteLine("</name>");
-                                    writer.WriteLine("<number>1</number>");
-                                    writer.WriteLine("<trkseg>");
-                                }
-
-                                // 同じタイムスタンプのデータは出力させない
-                                DateTimeOffset jstTime = new DateTimeOffset(int.Parse(year), int.Parse(month), int.Parse(day), int.Parse(hour), int.Parse(minute), int.Parse(second), new TimeSpan(9, 0, 0));
-                                long tick = jstTime.Ticks;
-                                if (lasttick >= tick) continue;
-
-                                // 緯度経度データを出力する
-                                DateTimeOffset utcTime = jstTime.ToUniversalTime(); // JSTをUTCに変換する
-                                string date_iso = String.Format("{0}-{1:00}-{2:00}T{3:00}:{4:00}:{5:00}Z", utcTime.Year, utcTime.Month, utcTime.Day, utcTime.Hour, utcTime.Minute, utcTime.Second);
-                                writer.WriteLine("<trkpt lat=\"" + latitude + "\" lon=\"" + longitude + "\">");
-                                writer.WriteLine("  <time>" + date_iso + "</time>");
-                                writer.WriteLine("</trkpt>");
-
-                                lasttick = tick;
-                                firstFlag = false;
+                                outputFile = m.Groups[1].Value + "(2)" + ".gpx";
+                            }
+                            else
+                            {
+                                Console.Error.WriteLine("Error: File name extension does not exist.");
+                                Environment.Exit(1);
                             }
                         }
                     }
+                }
 
-                    if (!firstFlag)
+                // GPXファイルを作成する
+                long lasttick = long.MinValue;
+                long currenttick = 0;
+                try
+                {
+                    using (var writer = new StreamWriter(outputFile))
                     {
-                        writer.WriteLine("</trkseg>");
-                        writer.WriteLine("</trk>");
-                        writer.WriteLine("</gpx>");
+                        bool firstOfAllFlag = true;
+                        foreach (long key in keys)
+                        {
+                            List<string> subtitles = dataArrayList[key];
+                            bool firstOfFilelFlag = true;
+                            foreach (string subtitle in subtitles)
+                            {
+                                m = Regex.Match(subtitle, subtitlePattern);
+                                if (m.Success)
+                                {
+                                    string product = m.Groups[1].Value;
+                                    string year = m.Groups[2].Value;
+                                    string month = m.Groups[3].Value;
+                                    string day = m.Groups[4].Value;
+                                    string hour = m.Groups[5].Value;
+                                    string minute = m.Groups[6].Value;
+                                    string second = m.Groups[7].Value;
+                                    string latitude = m.Groups[8].Value;
+                                    if (m.Groups[9].Value.Equals("S")) latitude = "-" + latitude;
+                                    string longitude = m.Groups[10].Value;
+                                    if (m.Groups[11].Value.Equals("W")) longitude = "-" + longitude;
+                                    string velocity = m.Groups[12].Value;
+
+                                    if (firstOfAllFlag)
+                                    {
+                                        writer.WriteLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+                                        writer.WriteLine("<gpx version=\"1.1\" xmlns=\"http://www.topografix.com/GPX/1/1\" creator=\"ExtractGPSFromAVISubtitle\">");
+                                        writer.WriteLine("<trk>");
+                                        writer.Write("<name>" + product);
+                                        writer.Write(String.Format("_{0}-{1:00}-{2:00}_{3:00}:{4:00}:{5:00}", year, month, day, hour, minute, second));
+                                        writer.WriteLine("</name>");
+                                        writer.WriteLine("<number>1</number>");
+                                        writer.WriteLine("<trkseg>");
+                                    }
+
+                                    // 同じタイムスタンプのデータは出力させない
+                                    DateTimeOffset jstTime = new DateTimeOffset(int.Parse(year), int.Parse(month), int.Parse(day), int.Parse(hour), int.Parse(minute), int.Parse(second), new TimeSpan(9, 0, 0));
+                                    currenttick = jstTime.Ticks;
+                                    if (firstOfFilelFlag && !firstOfAllFlag)
+                                    {
+                                        if (lasttick + gap*60 / 100e-9 <= currenttick) break;
+                                    }
+                                    if (lasttick >= currenttick) continue;
+
+                                    // 緯度経度データを出力する
+                                    DateTimeOffset utcTime = jstTime.ToUniversalTime(); // JSTをUTCに変換する
+                                    string date_iso = String.Format("{0}-{1:00}-{2:00}T{3:00}:{4:00}:{5:00}Z", utcTime.Year, utcTime.Month, utcTime.Day, utcTime.Hour, utcTime.Minute, utcTime.Second);
+                                    writer.WriteLine("<trkpt lat=\"" + latitude + "\" lon=\"" + longitude + "\">");
+                                    writer.WriteLine("  <time>" + date_iso + "</time>");
+                                    writer.WriteLine("</trkpt>");
+
+                                    lasttick = currenttick;
+                                    firstOfAllFlag = false;
+                                    firstOfFilelFlag = false;
+                                }
+                            }
+                            if (firstOfFilelFlag && !firstOfAllFlag)
+                            {
+                                if (lasttick + gap * 60 / 100e-9 <= currenttick) break;
+                            }
+                            dataArrayList.Remove(key);
+                        }
+
+                        if (!firstOfAllFlag)
+                        {
+                            writer.WriteLine("</trkseg>");
+                            writer.WriteLine("</trk>");
+                            writer.WriteLine("</gpx>");
+                        }
                     }
                 }
-            }
-            catch (Exception e)
-            {
-                Console.Error.WriteLine("Error: " + e.Message);
-                Environment.Exit(1);
+                catch (Exception e)
+                {
+                    Console.Error.WriteLine("Error: " + e.Message);
+                    Environment.Exit(1);
+                }
             }
         }
 
